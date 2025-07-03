@@ -1,0 +1,23 @@
+# This file tells Render how to build and deploy your service.
+services:
+  # This is a Web Service
+  - type: web
+    name: live-signal-scraper
+    # Use the Node.js environment
+    env: node
+    # The branch to deploy from
+    branch: main
+    # Add the Google Chrome buildpack here
+    buildpacks:
+      - https://github.com/heroku/heroku-buildpack-google-chrome
+    # The commands to run during build and start
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    # Define environment variables here
+    envVars:
+      # This tells Puppeteer where the buildpack installed Chrome
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/google-chrome
+      # IMPORTANT: We will set the webhook URL in the Render dashboard for security
+      - key: N8N_WEBHOOK_URL
+        sync: false
