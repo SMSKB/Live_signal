@@ -1,21 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta changes:
+1.  **Updating your `scraper.js`** to include a tiny web server.
+2.  **Deploying to Render as a "Web Service"** instead of a "Background Worker".
+
+Let's do it step-by-step.
+
+---
+
+### **Phase 1: Update Your Project Files**
+
+We only need to modify your `scraper.js` file. You don't need a separate `index.html` file; we can serve a simple message directly from the script.
+
+#### **The Final `scraper.js` Code**
+
+This is the complete and final version. It includes the web server logic alongside your existing scraper logic. Copy this entire block and replace the contents of your `scraper.js` file.
+
+```javascript
 // =============================================================================
 //                            IMPORTS
 // =============================================================================
 const puppeteer = require('puppeteer');
 const axios = require('axios');
-const http = require('http'); // Required to create a server
-const fs = require('fs');     // Required to read the HTML file
-const path = require('path'); // Required to locate the HTML file
+const http = require('http'); // Import the built-in HTTP module to create a server
 
 // =============================================================================
 //                            CONFIGURATION
 // =============================================================================
 const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
-  WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
+  WEBHOOK_URL: process.env.N8N_WEBHOOK_URL, // Reads from environment variable
   SCRAPE_INTERVAL_MS: 5000,
-  RELOAD_LIMIT: 10, // Proactively create a new page after 10 reloads
-  PORT: process.env.PORT || 3000, // Reads the port from Render's environment
+  RELOAD_LIMIT: 10,
+  // Render provides the PORT environment variable for Web Services automatically
+  PORT: process.env.PORT || 3000,
 };
 
 // =============================================================================
@@ -51,13 +71,14 @@ async function createNewPage(browser) {
 //                         MAIN SCRAPER LOGIC
 // =============================================================================
 
+// We wrap the scraper logic in a function so we can call it after the server starts.
 async function runScraper() {
   console.log('🚀 Starting the Resilient Puppeteer scraper...');
   const processedMessages = new Set();
   console.log('🖥️  Launching browser...');
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox'], // Required for Render
   });
 
   let page = await createNewPage(browser);
@@ -103,17 +124,14 @@ async function runScraper() {
 
     } catch (error) {
       console.error('🔥 An error occurred during the scrape cycle:', error.message);
-      
-      // --- THIS IS THE FINAL IMPROVEMENT ---
-      // We now check for BOTH types of navigation errors before recovering.
-      if (error.message.includes('detached Frame') || error.message.includes('Execution context was destroyed')) {
-        console.warn('🚑 Navigation error detected. Attempting recovery by creating a new page...');
+      if (error.message.includes('detached Frame')) {
+        console.warn('🚑 Detached frame error detected. Attempting recovery...');
         try {
             page = await createNewPage(browser);
             reloadCount = 0;
-            if (!page) throw new Error("Failed to recover from navigation error.");
+            if (!page) throw new Error("Failed to recover from detached frame.");
         } catch (recoveryError) {
-            console.error('🔥🔥 CRITICAL FAILURE: Could not recover from navigation error.', recoveryError.message);
+            console.error('🔥🔥 CRITICAL FAILURE: Could not recover from detached frame error.', recoveryError.message);
         }
       }
     }
@@ -124,20 +142,17 @@ async function runScraper() {
 //                         WEB SERVER FOR KEEP-ALIVE
 // =============================================================================
 
+// Create a simple HTTP server that responds to pings from cron-job.org
 const server = http.createServer((req, res) => {
-  const indexPath = path.join(__dirname, 'index.html');
-  fs.readFile(indexPath, (err, data) => {
-    if (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Server Error: Could not find index.html');
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(data);
-    }
-  });
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Scraper is alive and running!\n');
 });
 
+// Start the server and listen on the port provided by Render
 server.listen(CONFIG.PORT, () => {
   console.log(`✅ Health check server listening on port ${CONFIG.PORT}`);
+  
+  // *** CRUCIAL STEP ***
+  // Once the server is successfully listening, we start the main scraper logic.
   runScraper();
 });
