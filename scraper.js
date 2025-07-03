@@ -1,11 +1,11 @@
 // =============================================================================
 //                            IMPORTS
-// =============================================================================
+// =================================_JS
 const puppeteer = require('puppeteer');
 const axios = require('axios');
-const http = require('http'); // Required to create a server
-const fs = require('fs');     // Required to read the HTML file
-const path = require('path'); // Required to locate the HTML file
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 // =============================================================================
 //                            CONFIGURATION
@@ -14,14 +14,13 @@ const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
   WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
   SCRAPE_INTERVAL_MS: 5000,
-  RELOAD_LIMIT: 10, // Proactively create a new page after 10 reloads
-  PORT: process.env.PORT || 3000, // Reads the port from Render's environment
+  RELOAD_LIMIT: 10,
+  PORT: process.env.PORT || 3000,
 };
 
 // =============================================================================
 //                            HELPER FUNCTIONS
 // =============================================================================
-
 async function sendToWebhook(messageText) {
   const payload = { message: messageText };
   try {
@@ -50,12 +49,15 @@ async function createNewPage(browser) {
 // =============================================================================
 //                         MAIN SCRAPER LOGIC
 // =============================================================================
-
 async function runScraper() {
   console.log('🚀 Starting the Resilient Puppeteer scraper...');
   const processedMessages = new Set();
   console.log('🖥️  Launching browser...');
+  
+  // --- THIS IS THE FINAL FIX ---
+  // We explicitly tell Puppeteer where to find the browser inside the Docker container.
   const browser = await puppeteer.launch({
+    executablePath: '/usr/bin/google-chrome',
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
@@ -103,11 +105,8 @@ async function runScraper() {
 
     } catch (error) {
       console.error('🔥 An error occurred during the scrape cycle:', error.message);
-      
-      // --- THIS IS THE FINAL IMPROVEMENT ---
-      // We now check for BOTH types of navigation errors before recovering.
       if (error.message.includes('detached Frame') || error.message.includes('Execution context was destroyed')) {
-        console.warn('🚑 Navigation error detected. Attempting recovery by creating a new page...');
+        console.warn('🚑 Navigation error detected. Attempting recovery...');
         try {
             page = await createNewPage(browser);
             reloadCount = 0;
@@ -123,7 +122,6 @@ async function runScraper() {
 // =============================================================================
 //                         WEB SERVER FOR KEEP-ALIVE
 // =============================================================================
-
 const server = http.createServer((req, res) => {
   const indexPath = path.join(__dirname, 'index.html');
   fs.readFile(indexPath, (err, data) => {
