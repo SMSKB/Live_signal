@@ -12,7 +12,7 @@ const path = require('path');
 // =============================================================================
 const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
-  WEBHOOK_URL: process.env.N8N_WEBHOOK_URL,
+  WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
   SCRAPE_INTERVAL_MS: 5000,
   PROCESSED_MESSAGES_MEMORY: 12,
   PORT: process.env.PORT || 3000,
