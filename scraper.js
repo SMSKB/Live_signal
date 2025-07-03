@@ -16,137 +16,105 @@ const CONFIG = {
   SCRAPE_INTERVAL_MS: 5000,
   PROCESSED_MESSAGES_MEMORY: 12,
   PORT: process.env.PORT || 3000,
-  // Recommended launch arguments for server environments
-  PUPPETEER_ARGS: [
+  PUPPETEER_ARGS: [ // Arguments for low-resource environments
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-infobars',
-    '--window-position=0,0',
-    '--ignore-certifcate-errors',
-    '--ignore-certifcate-errors-spki-list',
-    '--disable-speech-api',
-    '--disable-background-networking',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-breakpad',
-    '--disable-client-side-phishing-detection',
-    '--disable-component-update',
-    '--disable-default-apps',
     '--disable-dev-shm-usage',
-    '--disable-domain-reliability',
-    '--disable-extensions',
-    '--disable-features=AudioOutput,SpeechSynthesis,Translate',
-    '--disable-hang-monitor',
-    '--disable-ipc-flooding-protection',
-    '--disable-notifications',
-    '--disable-offer-store-unmasked-wallet-cards',
-    '--disable-popup-blocking',
-    '--disable-print-preview',
-    '--disable-prompt-on-repost',
-    '--disable-renderer-backgrounding',
-    '--disable-setuid-sandbox',
-    '--disable-sync',
-    '--hide-scrollbars',
-    '--ignore-gpu-blacklist',
-    '--metrics-recording-only',
-    '--mute-audio',
-    '--no-default-browser-check',
+    '--disable-accelerated-2d-canvas',
     '--no-first-run',
-    '--no-pings',
     '--no-zygote',
-    '--password-store=basic',
-    '--use-gl=swiftshader',
-    '--use-mock-keychain',
-    '--single-process'
+    '--single-process',
+    '--disable-gpu'
   ],
 };
 
 // =============================================================================
-//                            HELPER FUNCTIONS (Unchanged)
+//                            GLOBAL STATE
 // =============================================================================
-async function sendToWebhook(messageText) {
-  const payload = { message: messageText };
+// This memory array is outside the scraping function, so it persists between runs.
+const processedMessages = [];
+
+// =============================================================================
+//                            CORE SCRAPING FUNCTION
+// =============================================================================
+async function scrapeAndProcess() {
+  console.log('--- New Scrape Cycle ---');
+  let browser = null; // Start fresh
+  
   try {
-    await axios.post(CONFIG.WEBHOOK_URL, payload);
-    console.log('✅ Successfully sent message to n8n webhook.');
+    // 1. Launch a BRAND NEW browser instance for this cycle.
+    console.log('🖥️  Launching a new browser instance...');
+    browser = await puppeteer.launch({
+      executablePath: '/usr/bin/google-chrome',
+      headless: true,
+      args: CONFIG.PUPPETEER_ARGS,
+    });
+
+    const page = await browser.newPage();
+    console.log('🛠️  Page created.');
+
+    // Block unnecessary resources to save memory and bandwidth
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    console.log(`Navigating to ${CONFIG.TELEGRAM_URL}...`);
+    await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    const messagesOnPage = await page.$$eval(
+      '.tgme_widget_message_text',
+      (elements) => elements.map(el => el.innerText.trim())
+    );
+
+    const latestTwoMessages = messagesOnPage.slice(-2);
+    console.log(`🔎 Found ${latestTwoMessages.length} latest messages to process.`);
+
+    for (const text of latestTwoMessages) {
+      if (text && !processedMessages.includes(text)) {
+        console.log('📩 NEW MESSAGE FOUND. Sending to webhook...');
+        console.log(text);
+        await sendToWebhook(text);
+        
+        // Add to our persistent memory
+        processedMessages.push(text);
+        // If memory is full, remove the oldest item
+        if (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
+          processedMessages.shift();
+        }
+      }
+    }
+    
   } catch (error) {
-    console.error(`❌ Failed to send to n8n. Status: ${error.response?.status}`);
-    console.error(`   Error details: ${error.message}`);
+    console.error(`🔥 An error occurred during the scrape cycle: ${error.message}`);
+  } finally {
+    // 2. ALWAYS close the entire browser instance at the end of the cycle.
+    // This is the most important step for cleaning memory.
+    if (browser) {
+      await browser.close();
+      console.log('✅ Browser instance closed. Memory cleaned.');
+    }
   }
 }
 
 // =============================================================================
-//                         MAIN SCRAPER LOGIC
+//                         WEB SERVER & MAIN LOOP
 // =============================================================================
-async function runScraper() {
-  console.log('🚀 Starting the OPTIMIZED Scraper...');
-  const processedMessages = [];
-  
-  console.log('🖥️  Launching a single, persistent browser instance with optimization flags...');
-  const browser = await puppeteer.launch({
-    executablePath: '/usr/bin/google-chrome',
-    headless: true,
-    args: CONFIG.PUPPETEER_ARGS,
-  });
-
-  console.log(` scraper running. Checking every ${CONFIG.SCRAPE_INTERVAL_MS / 1000} seconds.`);
-
-  setInterval(async () => {
-    let page = null;
+async function sendToWebhook(messageText) {
+    const payload = { message: messageText };
     try {
-      console.log('--- New Scrape Cycle ---');
-      console.log('🛠️  Creating a fresh page...');
-      page = await browser.newPage();
-      
-      // --- OPTIMIZATION 1: BLOCK UNNECESSARY RESOURCES ---
-      await page.setRequestInterception(true);
-      page.on('request', (req) => {
-        if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
-          req.abort();
-        } else {
-          req.continue();
-        }
-      });
-
-      console.log(`Navigating to ${CONFIG.TELEGRAM_URL}...`);
-      
-      // --- OPTIMIZATION 2: FASTER PAGE LOAD CONDITION ---
-      await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-
-      const messagesOnPage = await page.$$eval(
-        '.tgme_widget_message_text',
-        (elements) => elements.map(el => el.innerText.trim())
-      );
-      const latestTwoMessages = messagesOnPage.slice(-2);
-      console.log(`🔎 Found ${latestTwoMessages.length} latest messages to process.`);
-
-      for (const text of latestTwoMessages) {
-        if (text && !processedMessages.includes(text)) {
-          console.log('📩 NEW MESSAGE FOUND. Sending to webhook...');
-          console.log(text);
-          await sendToWebhook(text);
-          processedMessages.push(text);
-          if (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
-            processedMessages.shift();
-          }
-        }
-      }
-      console.log('Cycle complete.');
-
+        await axios.post(CONFIG.WEBHOOK_URL, payload);
+        console.log('✅ Successfully sent message to n8n webhook.');
     } catch (error) {
-      console.error(`🔥 An error occurred during the scrape cycle: ${error.message}`);
-    } finally {
-      if (page && !page.isClosed()) {
-        await page.close();
-        console.log('✅ Page closed successfully.');
-      }
+        console.error(`❌ Failed to send to n8n. Status: ${error.response?.status}`);
+        console.error(`   Error details: ${error.message}`);
     }
-  }, CONFIG.SCRAPE_INTERVAL_MS);
 }
 
-// =============================================================================
-//                         WEB SERVER (Unchanged)
-// =============================================================================
 const server = http.createServer((req, res) => {
   const userAgent = req.headers['user-agent'] || '';
   if (userAgent.includes('Cron-Job.org')) {
@@ -170,5 +138,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(CONFIG.PORT, () => {
   console.log(`✅ Health check server listening on port ${CONFIG.PORT}`);
-  runScraper();
+  // Start the very first scrape immediately
+  scrapeAndProcess();
+  // Then, set the interval to run it repeatedly
+  setInterval(scrapeAndProcess, CONFIG.SCRAPE_INTERVAL_MS);
 });
