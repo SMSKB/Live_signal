@@ -1,6 +1,6 @@
 // =============================================================================
 //                            IMPORTS
-// =================================_JS
+// =============================================================================
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const http = require('http');
@@ -14,12 +14,13 @@ const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
   WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
   SCRAPE_INTERVAL_MS: 5000,
-  RELOAD_LIMIT: 10,
+  // This is how many sent messages we will remember to prevent duplicates
+  PROCESSED_MESSAGES_MEMORY: 12, 
   PORT: process.env.PORT || 3000,
 };
 
 // =============================================================================
-//                            HELPER FUNCTIONS
+//                            HELPER FUNCTION
 // =============================================================================
 async function sendToWebhook(messageText) {
   const payload = { message: messageText };
@@ -32,95 +33,78 @@ async function sendToWebhook(messageText) {
   }
 }
 
-async function createNewPage(browser) {
-  console.log('🛠️  Creating a new page...');
-  try {
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36');
-    await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    console.log('✅ New page created and navigated successfully.');
-    return page;
-  } catch (e) {
-    console.error('🔥 CRITICAL: Failed to create and initialize a new page.', e.message);
-    return null;
-  }
-}
-
 // =============================================================================
 //                         MAIN SCRAPER LOGIC
 // =============================================================================
 async function runScraper() {
-  console.log('🚀 Starting the Resilient Puppeteer scraper...');
-  const processedMessages = new Set();
-  console.log('🖥️  Launching browser...');
+  console.log('🚀 Starting the Final Scraper...');
   
-  // --- THIS IS THE FINAL FIX ---
-  // We explicitly tell Puppeteer where to find the browser inside the Docker container.
+  // --- This is our new, persistent memory ---
+  // It's an array that will act as a "sliding window".
+  const processedMessages = []; 
+
+  console.log('🖥️  Launching a single, persistent browser instance...');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/google-chrome',
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
 
-  let page = await createNewPage(browser);
-  let reloadCount = 0;
-
-  if (!page) {
-    console.log('Could not create initial page. Shutting down scraper logic.');
-    await browser.close();
-    return;
-  }
-  
-  console.log(` scraper running. Refreshing every ${CONFIG.SCRAPE_INTERVAL_MS / 1000} seconds.`);
+  console.log(` scraper running. Checking every ${CONFIG.SCRAPE_INTERVAL_MS / 1000} seconds.`);
 
   setInterval(async () => {
+    let page = null; // Start fresh every cycle
     try {
-      console.log(`🔄 [Count: ${reloadCount + 1}] Reloading page...`);
-      await page.reload({ waitUntil: 'networkidle2' });
-      reloadCount++;
+      console.log('--- New Scrape Cycle ---');
+      console.log('🛠️  Creating a fresh page...');
+      page = await browser.newPage();
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36');
+      
+      console.log(`Navigating to ${CONFIG.TELEGRAM_URL}...`);
+      await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'networkidle2', timeout: 45000 });
 
       const messagesOnPage = await page.$$eval(
         '.tgme_widget_message_text',
         (elements) => elements.map(el => el.innerText.trim())
       );
 
-      for (const text of messagesOnPage) {
-        if (text && !processedMessages.has(text)) {
-          console.log('-'.repeat(50));
-          console.log('📩 NEW MESSAGE DETECTED:');
+      // --- NEW LOGIC: Only look at the last two messages ---
+      const latestTwoMessages = messagesOnPage.slice(-2);
+      console.log(`🔎 Found ${latestTwoMessages.length} latest messages to process.`);
+
+      for (const text of latestTwoMessages) {
+        // Check if we have already sent this message
+        if (text && !processedMessages.includes(text)) {
+          console.log('📩 NEW MESSAGE FOUND. Sending to webhook...');
           console.log(text);
-          processedMessages.add(text);
           await sendToWebhook(text);
-          console.log('-'.repeat(50));
+
+          // --- NEW MEMORY LOGIC ---
+          // Add the new message to our memory
+          processedMessages.push(text);
+          // If our memory is now too large, remove the oldest item
+          if (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
+            processedMessages.shift();
+          }
         }
       }
-
-      if (reloadCount >= CONFIG.RELOAD_LIMIT) {
-        console.warn(`♻️ Reached ${CONFIG.RELOAD_LIMIT} reloads. Proactively creating a fresh page.`);
-        await page.close();
-        page = await createNewPage(browser);
-        reloadCount = 0;
-        if (!page) throw new Error("Failed to recover by creating a new page after hitting reload limit.");
-      }
+      console.log('Cycle complete.');
 
     } catch (error) {
-      console.error('🔥 An error occurred during the scrape cycle:', error.message);
-      if (error.message.includes('detached Frame') || error.message.includes('Execution context was destroyed')) {
-        console.warn('🚑 Navigation error detected. Attempting recovery...');
-        try {
-            page = await createNewPage(browser);
-            reloadCount = 0;
-            if (!page) throw new Error("Failed to recover from navigation error.");
-        } catch (recoveryError) {
-            console.error('🔥🔥 CRITICAL FAILURE: Could not recover from navigation error.', recoveryError.message);
-        }
+      console.error(`🔥 An error occurred during the scrape cycle: ${error.message}`);
+    } finally {
+      // --- NEW RESILIENCE LOGIC ---
+      // Always close the page at the end of the cycle to free up resources.
+      if (page && !page.isClosed()) {
+        await page.close();
+        console.log('✅ Page closed successfully.');
       }
     }
   }, CONFIG.SCRAPE_INTERVAL_MS);
 }
 
 // =============================================================================
-//                         WEB SERVER FOR KEEP-ALIVE
+//                         WEB SERVER (Unchanged)
 // =============================================================================
 const server = http.createServer((req, res) => {
   const indexPath = path.join(__dirname, 'index.html');
