@@ -2,7 +2,7 @@
 //                            IMPORTS
 // =============================================================================
 const puppeteer = require('puppeteer');
-const axios = require('axios');
+const axios =require('axios');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -12,11 +12,12 @@ const path = require('path');
 // =============================================================================
 const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
-  WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
+  WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a',
   SCRAPE_INTERVAL_MS: 5000,
-  PROCESSED_MESSAGES_MEMORY: 12,
+  // (CORRECTION) Set a safer memory size. 6-7 is very small, 30 provides a better buffer against duplicates.
+  PROCESSED_MESSAGES_MEMORY: 30,
   PORT: process.env.PORT || 3000,
-  PUPPETEER_ARGS: [ // Arguments for low-resource environments
+  PUPPETEER_ARGS: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
@@ -31,18 +32,30 @@ const CONFIG = {
 // =============================================================================
 //                            GLOBAL STATE
 // =============================================================================
-// This memory array is outside the scraping function, so it persists between runs.
+// The memory array will act as a "rolling buffer" of the last ~30 messages seen.
 const processedMessages = [];
 
 // =============================================================================
-//                            CORE SCRAPING FUNCTION
+//                            CORE FUNCTIONS
 // =============================================================================
+
+async function sendToWebhook(messageText) {
+    const payload = { message: messageText };
+    try {
+        await axios.post(CONFIG.WEBHOOK_URL, payload);
+        console.log('✅ Successfully sent message to n8n webhook.');
+    } catch (error) {
+        console.error(`❌ Failed to send to n8n. Status: ${error.response?.status}`);
+        console.error(`   Error details: ${error.message}`);
+    }
+}
+
+// This function now contains the full scraping logic for one cycle.
 async function scrapeAndProcess() {
   console.log('--- New Scrape Cycle ---');
-  let browser = null; // Start fresh
+  let browser = null;
   
   try {
-    // 1. Launch a BRAND NEW browser instance for this cycle.
     console.log('🖥️  Launching a new browser instance...');
     browser = await puppeteer.launch({
       executablePath: '/usr/bin/google-chrome',
@@ -51,9 +64,7 @@ async function scrapeAndProcess() {
     });
 
     const page = await browser.newPage();
-    console.log('🛠️  Page created.');
-
-    // Block unnecessary resources to save memory and bandwidth
+    
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
@@ -70,30 +81,35 @@ async function scrapeAndProcess() {
       '.tgme_widget_message_text',
       (elements) => elements.map(el => el.innerText.trim())
     );
-
-    const latestTwoMessages = messagesOnPage.slice(-2);
-    console.log(`🔎 Found ${latestTwoMessages.length} latest messages to process.`);
-
-    for (const text of latestTwoMessages) {
+    
+    console.log(`🔎 Found ${messagesOnPage.length} messages on the page. Checking for new ones...`);
+    
+    // (CORRECTION) Iterate through all found messages, not just the last two.
+    // This is safer if multiple messages appear at once.
+    for (const text of messagesOnPage) {
       if (text && !processedMessages.includes(text)) {
+        console.log('-'.repeat(50));
         console.log('📩 NEW MESSAGE FOUND. Sending to webhook...');
         console.log(text);
-        await sendToWebhook(text);
         
         // Add to our persistent memory
         processedMessages.push(text);
-        // If memory is full, remove the oldest item
-        if (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
-          processedMessages.shift();
-        }
+
+        // Send the message
+        await sendToWebhook(text);
+        console.log('-'.repeat(50));
       }
+    }
+
+    // (CORRECTION) Prune the memory array AFTER processing all messages.
+    // This keeps the memory clean and respects the limit.
+    while (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
+      processedMessages.shift(); // Remove the oldest message from the beginning of the array
     }
     
   } catch (error) {
     console.error(`🔥 An error occurred during the scrape cycle: ${error.message}`);
   } finally {
-    // 2. ALWAYS close the entire browser instance at the end of the cycle.
-    // This is the most important step for cleaning memory.
     if (browser) {
       await browser.close();
       console.log('✅ Browser instance closed. Memory cleaned.');
@@ -104,42 +120,26 @@ async function scrapeAndProcess() {
 // =============================================================================
 //                         WEB SERVER & MAIN LOOP
 // =============================================================================
-async function sendToWebhook(messageText) {
-    const payload = { message: messageText };
-    try {
-        await axios.post(CONFIG.WEBHOOK_URL, payload);
-        console.log('✅ Successfully sent message to n8n webhook.');
-    } catch (error) {
-        console.error(`❌ Failed to send to n8n. Status: ${error.response?.status}`);
-        console.error(`   Error details: ${error.message}`);
-    }
-}
-
 const server = http.createServer((req, res) => {
-  const userAgent = req.headers['user-agent'] || '';
-  if (userAgent.includes('Cron-Job.org')) {
-    console.log('🤖 Cron job ping received.');
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('PING OK');
-  } else {
-    console.log('👤 Browser visit detected. Serving status page.');
-    const indexPath = path.join(__dirname, 'index.html');
-    fs.readFile(indexPath, (err, data) => {
-      if (err) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Server Error: Could not find index.html');
-      } else {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(data);
-      }
-    });
-  }
+  const indexPath = path.join(__dirname, 'index.html');
+  fs.readFile(indexPath, (err, data) => {
+    if (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Server Error: Could not find index.html');
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(data);
+    }
+  });
 });
+
+// (CORRECTION) The stable, self-calling loop.
+const mainLoop = async () => {
+    await scrapeAndProcess(); // Wait for the current scrape to finish
+    setTimeout(mainLoop, CONFIG.SCRAPE_INTERVAL_MS); // Then schedule the next one
+};
 
 server.listen(CONFIG.PORT, () => {
   console.log(`✅ Health check server listening on port ${CONFIG.PORT}`);
-  // Start the very first scrape immediately
-  scrapeAndProcess();
-  // Then, set the interval to run it repeatedly
-  setInterval(scrapeAndProcess, CONFIG.SCRAPE_INTERVAL_MS);
+  mainLoop(); // Start the first cycle of our stable loop.
 });
