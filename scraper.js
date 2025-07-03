@@ -12,15 +12,57 @@ const path = require('path');
 // =============================================================================
 const CONFIG = {
   TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
-  WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a', // <-- PASTE YOUR URL HERE
+  WEBHOOK_URL: process.env.N8N_WEBHOOK_URL,
   SCRAPE_INTERVAL_MS: 5000,
-  // This is how many sent messages we will remember to prevent duplicates
-  PROCESSED_MESSAGES_MEMORY: 12, 
+  PROCESSED_MESSAGES_MEMORY: 12,
   PORT: process.env.PORT || 3000,
+  // Recommended launch arguments for server environments
+  PUPPETEER_ARGS: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-infobars',
+    '--window-position=0,0',
+    '--ignore-certifcate-errors',
+    '--ignore-certifcate-errors-spki-list',
+    '--disable-speech-api',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-breakpad',
+    '--disable-client-side-phishing-detection',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-dev-shm-usage',
+    '--disable-domain-reliability',
+    '--disable-extensions',
+    '--disable-features=AudioOutput,SpeechSynthesis,Translate',
+    '--disable-hang-monitor',
+    '--disable-ipc-flooding-protection',
+    '--disable-notifications',
+    '--disable-offer-store-unmasked-wallet-cards',
+    '--disable-popup-blocking',
+    '--disable-print-preview',
+    '--disable-prompt-on-repost',
+    '--disable-renderer-backgrounding',
+    '--disable-setuid-sandbox',
+    '--disable-sync',
+    '--hide-scrollbars',
+    '--ignore-gpu-blacklist',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--no-default-browser-check',
+    '--no-first-run',
+    '--no-pings',
+    '--no-zygote',
+    '--password-store=basic',
+    '--use-gl=swiftshader',
+    '--use-mock-keychain',
+    '--single-process'
+  ],
 };
 
 // =============================================================================
-//                            HELPER FUNCTION
+//                            HELPER FUNCTIONS (Unchanged)
 // =============================================================================
 async function sendToWebhook(messageText) {
   const payload = { message: messageText };
@@ -37,52 +79,53 @@ async function sendToWebhook(messageText) {
 //                         MAIN SCRAPER LOGIC
 // =============================================================================
 async function runScraper() {
-  console.log('🚀 Starting the Final Scraper...');
+  console.log('🚀 Starting the OPTIMIZED Scraper...');
+  const processedMessages = [];
   
-  // --- This is our new, persistent memory ---
-  // It's an array that will act as a "sliding window".
-  const processedMessages = []; 
-
-  console.log('🖥️  Launching a single, persistent browser instance...');
+  console.log('🖥️  Launching a single, persistent browser instance with optimization flags...');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/google-chrome',
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: CONFIG.PUPPETEER_ARGS,
   });
 
   console.log(` scraper running. Checking every ${CONFIG.SCRAPE_INTERVAL_MS / 1000} seconds.`);
 
   setInterval(async () => {
-    let page = null; // Start fresh every cycle
+    let page = null;
     try {
       console.log('--- New Scrape Cycle ---');
       console.log('🛠️  Creating a fresh page...');
       page = await browser.newPage();
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36');
       
+      // --- OPTIMIZATION 1: BLOCK UNNECESSARY RESOURCES ---
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+          req.abort();
+        } else {
+          req.continue();
+        }
+      });
+
       console.log(`Navigating to ${CONFIG.TELEGRAM_URL}...`);
-      await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'networkidle2', timeout: 45000 });
+      
+      // --- OPTIMIZATION 2: FASTER PAGE LOAD CONDITION ---
+      await page.goto(CONFIG.TELEGRAM_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
       const messagesOnPage = await page.$$eval(
         '.tgme_widget_message_text',
         (elements) => elements.map(el => el.innerText.trim())
       );
-
-      // --- NEW LOGIC: Only look at the last two messages ---
       const latestTwoMessages = messagesOnPage.slice(-2);
       console.log(`🔎 Found ${latestTwoMessages.length} latest messages to process.`);
 
       for (const text of latestTwoMessages) {
-        // Check if we have already sent this message
         if (text && !processedMessages.includes(text)) {
           console.log('📩 NEW MESSAGE FOUND. Sending to webhook...');
           console.log(text);
           await sendToWebhook(text);
-
-          // --- NEW MEMORY LOGIC ---
-          // Add the new message to our memory
           processedMessages.push(text);
-          // If our memory is now too large, remove the oldest item
           if (processedMessages.length > CONFIG.PROCESSED_MESSAGES_MEMORY) {
             processedMessages.shift();
           }
@@ -93,8 +136,6 @@ async function runScraper() {
     } catch (error) {
       console.error(`🔥 An error occurred during the scrape cycle: ${error.message}`);
     } finally {
-      // --- NEW RESILIENCE LOGIC ---
-      // Always close the page at the end of the cycle to free up resources.
       if (page && !page.isClosed()) {
         await page.close();
         console.log('✅ Page closed successfully.');
@@ -107,16 +148,24 @@ async function runScraper() {
 //                         WEB SERVER (Unchanged)
 // =============================================================================
 const server = http.createServer((req, res) => {
-  const indexPath = path.join(__dirname, 'index.html');
-  fs.readFile(indexPath, (err, data) => {
-    if (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Server Error: Could not find index.html');
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(data);
-    }
-  });
+  const userAgent = req.headers['user-agent'] || '';
+  if (userAgent.includes('Cron-Job.org')) {
+    console.log('🤖 Cron job ping received.');
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('PING OK');
+  } else {
+    console.log('👤 Browser visit detected. Serving status page.');
+    const indexPath = path.join(__dirname, 'index.html');
+    fs.readFile(indexPath, (err, data) => {
+      if (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Server Error: Could not find index.html');
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(data);
+      }
+    });
+  }
 });
 
 server.listen(CONFIG.PORT, () => {
