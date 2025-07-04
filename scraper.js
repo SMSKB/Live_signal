@@ -11,7 +11,7 @@ const path = require('path');
 //                            CONFIGURATION
 // =============================================================================
 const CONFIG = {
-  TELEGRAM_URL: 'https://t.me/s/Quotex_SuperBot',
+  TELEGRAM_URL: 'https://t.me/s/QutexTrading_Bot',
   WEBHOOK_URL: 'https://n8n-kh5z.onrender.com/webhook/02c29e47-81ff-4a7a-b1ca-ec7b1fbdf04a',
   SCRAPE_INTERVAL_MS: 5000,
   // (CORRECTION) Set a safer memory size. 6-7 is very small, 30 provides a better buffer against duplicates.
